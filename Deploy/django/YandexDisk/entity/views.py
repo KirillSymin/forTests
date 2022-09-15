@@ -26,7 +26,6 @@ def use_silk_when_debug(name):
             return func
     return wrapper
 
-# TODO Написать свои тесты
 
 def recalculate_parents_sizes(entity, entity_size, update_date, sign):
     if not entity_size:
@@ -43,7 +42,23 @@ def recalculate_parents_sizes(entity, entity_size, update_date, sign):
                                                    created_date=update_date))
     bulk_parents_data = EntityDataHistory.objects.bulk_create(bulk_parents_data)
     for parent_data in bulk_parents_data:
-        # TODO чекнуть производительность
+        cur_entity = parent_data.entity
+        cur_entity.actual_data = parent_data
+        bulk_parents.append(cur_entity)
+    Entity.objects.bulk_update(bulk_parents, ['actual_data'])
+
+
+def update_parents_data(entity, update_date):
+    parents = entity.get_ancestors().select_related('actual_data')
+    bulk_parents = []
+    bulk_parents_data = []
+    for parent in parents:
+        prev_data = parent.actual_data
+        prev_data.id = None
+        prev_data.data = update_date
+        bulk_parents_data.append(prev_data)
+    bulk_parents_data = EntityDataHistory.objects.bulk_create(bulk_parents_data)
+    for parent_data in bulk_parents_data:
         cur_entity = parent_data.entity
         cur_entity.actual_data = parent_data
         bulk_parents.append(cur_entity)
@@ -61,7 +76,6 @@ class EntityImportView(View):
                 return error_400
             if valid_ser.is_valid():
                 valid_data = valid_ser.validated_data
-                # print(valid_data)
                 try:
                     with transaction.atomic():
                         for item in valid_data['items']:
@@ -94,6 +108,8 @@ class EntityImportView(View):
                                     if new_size is not None and diff:
                                         recalculate_parents_sizes(entity, abs(diff), new_update_date,
                                                                   '+' if diff >= 0 else '-')
+                                    else:
+                                        update_parents_data(entity, new_update_date)
                                 if entity_type == 'FOLDER':
                                     new_size = entity.actual_data.size
                                 new_history = EntityDataHistory.objects.create(entity_id=entity_id,
@@ -109,12 +125,14 @@ class EntityImportView(View):
                                         entity = Entity.objects.get(id=new_parent_id).add_child(id=entity_id,
                                                                                                 type=entity_type)
                                     except ObjectDoesNotExist:
-                                        # TODO странный кейс, может возниктунуть, только если запрос неупорядочен или неправильный
                                         return error_400
                                     if entity_type == 'FILE':
                                         recalculate_parents_sizes(entity, new_size, new_update_date, '+')
+                                    else:
+                                        update_parents_data(entity, new_update_date)
                                 else:
                                     entity = Entity.add_root(id=entity_id, type=entity_type)
+                                    update_parents_data(entity, new_update_date)
                                 new_history = EntityDataHistory.objects.create(entity_id=entity_id,
                                                                                parent_id=new_parent_id,
                                                                                url=new_url,
@@ -173,16 +191,21 @@ class GetNodesView(View):
 class DeleteNodeView(View):
     @use_silk_when_debug(name='Delete')
     def delete(self, request, entity_id=None):
-        if entity_id is None:
-            return error_400
+        date_str = request.GET.get('date')
+        if date_str:
+            if entity_id is None:
+                return error_400
 
-        try:
-            entity = Entity.objects.get(id=entity_id)
-        except ObjectDoesNotExist:
-            return error_404
+            try:
+                entity = Entity.objects.select_related('actual_data').get(id=entity_id)
+            except ObjectDoesNotExist:
+                return error_404
 
-        entity.delete()
-        return JsonResponse({})
+            recalculate_parents_sizes(entity, entity.actual_data.size, date_str, '-')
+
+            entity.delete()
+            return JsonResponse({})
+        return 400
 
 
 class UpdatesView(View):

@@ -6,15 +6,18 @@ services:
     volumes:
       - ./data/db:/var/lib/postgresql/data
     env_file: local_settings.env
+    restart: always
   nginx:
     image: nginx
     ports:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: always
   django:
     build: django/
     command: gunicorn -w 3 -b 0.0.0.0:8001 application.wsgi
     depends_on:
       - db
       - nginx
+    restart: always
